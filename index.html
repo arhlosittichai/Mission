@@ -104,6 +104,22 @@
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
+        /* สไตล์สำหรับ debug panel */
+        .debug-panel {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: #fff;
+            border-top: 2px solid #3b82f6;
+            padding: 10px;
+            max-height: 200px;
+            overflow-y: auto;
+            z-index: 1000;
+        }
+        .debug-panel.hidden {
+            display: none;
+        }
     </style>
 </head>
 <body>
@@ -280,15 +296,22 @@
                 <p class="text-gray-700">กำลังดำเนินการ...</p>
             </div>
         </div>
+
+        <!-- Debug Panel -->
+        <div id="debugPanel" class="debug-panel hidden">
+            <h3 class="font-bold mb-2">Debug Information</h3>
+            <div id="debugContent" class="text-xs font-mono"></div>
+        </div>
     </main>
 
     <script>
         // ตัวแปรสำหรับเก็บข้อมูลภารกิจ
         let missions = [];
+        let debugMode = true; // เปิดโหมด debug
 
         // URL ของ Google Apps Script Web App
-        const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbw3wlYjbhdXVsAhBLAY6OLFtyKsggrOzp7psnNva42ET-CuproAp3qR456OW_PdKlc2xg/exec';
-		// หมายเหตุ: คุณต้องแทนที่ URL ด้านบนด้วย URL ของ Google Apps Script Web App ของคุณเอง
+        const SCRIPT_URL = 'https://script.google.com/macros/library/d/1Ky6hl4a-XxGVzs_eQKa_sC2JE_A-iBzfaxcONOFnLOF14O5wKyds3Ym2/9';
+        // หมายเหตุ: คุณต้องแทนที่ URL ด้านบนด้วย URL ของ Google Apps Script Web App ของคุณเอง
 
         // รายชื่อผู้ปฏิบัติภารกิจทั้งหมด
         const allOperators = [
@@ -303,6 +326,26 @@
         // ตัวแปรเก็บ ID ของภารกิจที่เลือก
         let selectedMissionId = null;
 
+        // ฟังก์ชันสำหรับ debug
+        function debug(message, data = null) {
+            if (!debugMode) return;
+            
+            const debugPanel = document.getElementById('debugPanel');
+            const debugContent = document.getElementById('debugContent');
+            
+            debugPanel.classList.remove('hidden');
+            
+            const timestamp = new Date().toLocaleTimeString();
+            let logMessage = `[${timestamp}] ${message}`;
+            
+            if (data) {
+                logMessage += ': ' + JSON.stringify(data);
+            }
+            
+            debugContent.innerHTML += `<div>${logMessage}</div>`;
+            debugContent.scrollTop = debugContent.scrollHeight;
+        }
+
         // แสดง loading spinner
         function showLoading() {
             document.getElementById('loadingSpinner').classList.remove('hidden');
@@ -316,13 +359,44 @@
         // ฟังก์ชันสำหรับดึงข้อมูลจาก Google Sheets
         async function fetchMissions(date) {
             showLoading();
+            debug(`Fetching missions for date: ${date}`);
+            
             try {
                 const response = await fetch(`${SCRIPT_URL}?action=getMissions&date=${date}`);
-                const data = await response.json();
+                const responseText = await response.text();
+                debug('Raw API response', responseText);
+                
+                let data;
+                try {
+                    data = JSON.parse(responseText);
+                } catch (parseError) {
+                    debug('JSON parse error', parseError);
+                    hideLoading();
+                    Swal.fire({
+                        icon: 'error',
+                        title: 'เกิดข้อผิดพลาด',
+                        text: 'ข้อมูลที่ได้รับไม่ถูกต้อง กรุณาตรวจสอบ API'
+                    });
+                    return [];
+                }
+                
+                debug('Parsed API response', data);
                 hideLoading();
+                
+                if (!data.success) {
+                    debug('API reported failure', data);
+                    Swal.fire({
+                        icon: 'error',
+                        title: 'เกิดข้อผิดพลาด',
+                        text: data.message || 'ไม่สามารถดึงข้อมูลภารกิจได้'
+                    });
+                    return [];
+                }
+                
                 return data.missions || [];
             } catch (error) {
                 console.error('Error fetching missions:', error);
+                debug('Fetch error', error.toString());
                 hideLoading();
                 Swal.fire({
                     icon: 'error',
@@ -336,6 +410,8 @@
         // ฟังก์ชันสำหรับบันทึกข้อมูลลง Google Sheets
         async function saveMission(missionData) {
             showLoading();
+            debug('Saving mission data', missionData);
+            
             try {
                 const response = await fetch(SCRIPT_URL, {
                     method: 'POST',
@@ -344,11 +420,30 @@
                         mission: missionData
                     })
                 });
-                const data = await response.json();
+                
+                const responseText = await response.text();
+                debug('Raw save response', responseText);
+                
+                let data;
+                try {
+                    data = JSON.parse(responseText);
+                } catch (parseError) {
+                    debug('JSON parse error on save', parseError);
+                    hideLoading();
+                    Swal.fire({
+                        icon: 'error',
+                        title: 'เกิดข้อผิดพลาด',
+                        text: 'ข้อมูลที่ได้รับไม่ถูกต้อง กรุณาตรวจสอบ API'
+                    });
+                    return { success: false };
+                }
+                
+                debug('Parsed save response', data);
                 hideLoading();
                 return data;
             } catch (error) {
                 console.error('Error saving mission:', error);
+                debug('Save error', error.toString());
                 hideLoading();
                 Swal.fire({
                     icon: 'error',
@@ -362,6 +457,8 @@
         // ฟังก์ชันสำหรับลบข้อมูลจาก Google Sheets
         async function deleteMissionFromSheet(id) {
             showLoading();
+            debug('Deleting mission', { id });
+            
             try {
                 const response = await fetch(SCRIPT_URL, {
                     method: 'POST',
@@ -370,11 +467,30 @@
                         id: id
                     })
                 });
-                const data = await response.json();
+                
+                const responseText = await response.text();
+                debug('Raw delete response', responseText);
+                
+                let data;
+                try {
+                    data = JSON.parse(responseText);
+                } catch (parseError) {
+                    debug('JSON parse error on delete', parseError);
+                    hideLoading();
+                    Swal.fire({
+                        icon: 'error',
+                        title: 'เกิดข้อผิดพลาด',
+                        text: 'ข้อมูลที่ได้รับไม่ถูกต้อง กรุณาตรวจสอบ API'
+                    });
+                    return { success: false };
+                }
+                
+                debug('Parsed delete response', data);
                 hideLoading();
                 return data;
             } catch (error) {
                 console.error('Error deleting mission:', error);
+                debug('Delete error', error.toString());
                 hideLoading();
                 Swal.fire({
                     icon: 'error',
@@ -581,6 +697,8 @@
 
         // ฟังก์ชันสำหรับแสดงข้อมูลภารกิจ
         function displayMissions(filteredMissions) {
+            debug('Displaying missions', filteredMissions);
+            
             if (filteredMissions.length === 0) {
                 document.getElementById('missionsContainer').innerHTML = `
                     <div class="text-center text-gray-500 py-8">
@@ -600,6 +718,14 @@
             
             // เพิ่มภารกิจเข้าไปในกลุ่มของผู้ปฏิบัติแต่ละคน
             filteredMissions.forEach(mission => {
+                debug('Processing mission', mission);
+                
+                // ตรวจสอบว่า operators เป็น array หรือไม่
+                if (typeof mission.operators === 'string') {
+                    debug('Converting operators string to array', mission.operators);
+                    mission.operators = mission.operators.split(',').filter(op => op.trim() !== '');
+                }
+                
                 if (mission.operatorType === 'all') {
                     // ถ้าเป็นภารกิจที่ทุกคนต้องไป ให้เพิ่มเข้าไปในทุกกลุ่ม
                     allOperators.forEach(operator => {
@@ -610,14 +736,18 @@
                     });
                 } else {
                     // ถ้าเป็นภารกิจที่เลือกบางคน ให้เพิ่มเฉพาะคนที่ถูกเลือก
-                    mission.operators.forEach(operator => {
-                        if (groupedMissions[operator]) {
-                            groupedMissions[operator].push({
-                                ...mission,
-                                isAllOperators: false
-                            });
-                        }
-                    });
+                    if (Array.isArray(mission.operators)) {
+                        mission.operators.forEach(operator => {
+                            if (groupedMissions[operator]) {
+                                groupedMissions[operator].push({
+                                    ...mission,
+                                    isAllOperators: false
+                                });
+                            }
+                        });
+                    } else {
+                        debug('Warning: mission.operators is not an array', mission);
+                    }
                 }
             });
             
@@ -646,17 +776,21 @@
                 `;
                 
                 // เรียงลำดับตามเวลา
-                groupedMissions[operator].sort((a, b) => a.time.localeCompare(b.time));
+                groupedMissions[operator].sort((a, b) => {
+                    if (!a.time) return 1;
+                    if (!b.time) return -1;
+                    return a.time.localeCompare(b.time);
+                });
                 
                 groupedMissions[operator].forEach(mission => {
                     html += `
                         <tr data-id="${mission.id}" onclick="selectMission(${mission.id})">
                             <td>${formatTime(mission.time)}</td>
-                            <td>${mission.task}</td>
-                            <td>${mission.location}</td>
-                            <td>${mission.reporter}</td>
-                            <td>${formatPhone(mission.phone)}</td>
-                            <td>${mission.hasNote === 'yes' ? mission.note : '-'}</td>
+                            <td>${mission.task || ''}</td>
+                            <td>${mission.location || ''}</td>
+                            <td>${mission.reporter || ''}</td>
+                            <td>${formatPhone(mission.phone || '')}</td>
+                            <td>${mission.hasNote === 'yes' ? (mission.note || '') : '-'}</td>
                         </tr>
                     `;
                 });
@@ -701,6 +835,7 @@
 
         // ฟังก์ชันสำหรับจัดรูปแบบเวลา
         function formatTime(timeString) {
+            if (!timeString) return '';
             const [hours, minutes] = timeString.split(':');
             return `${hours}:${minutes} น.`;
         }
@@ -824,6 +959,13 @@
                 clearMissionSelection();
             }
         });
+
+        // เพิ่มปุ่มปิด Debug Panel
+        document.getElementById('debugPanel').innerHTML += `
+            <button class="absolute top-2 right-2 bg-red-500 text-white px-2 py-1 rounded text-xs" onclick="document.getElementById('debugPanel').classList.add('hidden')">
+                ปิด
+            </button>
+        `;
     </script>
-<script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'93cbcad9014988ff',t:'MTc0NjczNzAzOS4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+<script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'93d04f20b4e6f9e6',t:'MTc0Njc4NDM5OS4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
